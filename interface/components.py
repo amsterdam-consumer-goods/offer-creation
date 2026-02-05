@@ -66,7 +66,7 @@ def render_department_selector():
     st.markdown('<div class="section-label">Select Department</div>', unsafe_allow_html=True)
 
     department = st.radio(
-        "",
+        "Department",
         options=["Food", "HPC"],
         horizontal=True,
         label_visibility="collapsed",
