@@ -1,15 +1,16 @@
+# writers/excel_writer.py
 """Excel writer with professional formatting - starts from B2 as required."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
-
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 # Headers that must be forced into 2 lines (fixed regardless of zoom)
 _FIXED_HEADER_LABELS = {
@@ -22,8 +23,8 @@ _FIXED_HEADER_LABELS = {
     "Price/Unit (Euro)": "Price / Unit\n(Euro)",
 }
 
-# Columns that should DISPLAY 1 decimal in Excel (value remains float)
-_ONE_DECIMAL_COLUMNS = {
+# Availability columns must be INTEGERS in Excel
+_AVAILABILITY_COLUMNS = {
     "Availability/Cartons",
     "Availability/Pieces",
     "Availability/Pallets",
@@ -48,6 +49,16 @@ def _safe_float(v: Any) -> Optional[float]:
         return None
 
 
+def _ceil_int(v: Any) -> Optional[int]:
+    """Convert numeric-like value to int using CEIL; return None if not numeric/positive."""
+    x = _safe_float(v)
+    if x is None:
+        return None
+    if x <= 0 or math.isnan(x):
+        return None
+    return int(math.ceil(x))
+
+
 def write_rows_to_xlsx(
     output_path: Path,
     sheet_name: str,
@@ -59,14 +70,14 @@ def write_rows_to_xlsx(
 
     Availability calculation (ONE-WAY):
     - Availability/Pieces: Editable by user (value)
-    - Availability/Cartons: Formula (=Pieces ÷ Piece per case)
-    - Availability/Pallets: Formula (=Pieces ÷ Pieces per pallet)
-    
+    - Availability/Cartons: Formula (=ROUNDUP(Pieces ÷ Piece per case, 0))
+    - Availability/Pallets: Formula (=ROUNDUP(Pieces ÷ Pieces per pallet, 0))
+
     When user edits Pieces → Cartons and Pallets auto-update via formulas.
     When user edits Cartons/Pallets → Formula is overwritten, no auto-update.
     """
     print(f"📝 Writing Excel (B2 start): {output_path.name}")
-    
+
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_name
@@ -104,7 +115,6 @@ def write_rows_to_xlsx(
 
         cell = ws.cell(row=start_row, column=excel_col, value=header_text)
 
-        # ✅ CHANGED: Roboto 10 font
         cell.font = Font(bold=True, color="000000", size=10, name="Roboto")
         cell.fill = PatternFill(start_color="FBF0D9", end_color="FBF0D9", fill_type="solid")
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -128,17 +138,20 @@ def write_rows_to_xlsx(
             excel_col = start_col + col_idx
             value = row_data.get(header)
 
+            # Force availability columns to integer (ceil) when writing values
+            if header in _AVAILABILITY_COLUMNS:
+                value = _ceil_int(value)
+
             cell = ws.cell(row=excel_row, column=excel_col, value=value)
-            
-            # ✅ CHANGED: Roboto 10 font for all data cells
+
             cell.font = Font(size=10, name="Roboto")
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = full_grid
 
-            # Display 1 decimal for availability columns
-            if header in _ONE_DECIMAL_COLUMNS and isinstance(value, (int, float)):
-                cell.number_format = "0.0"
-        
+            # Ensure integer display in Excel for availability columns
+            if header in _AVAILABILITY_COLUMNS:
+                cell.number_format = "0"
+
         # --- AUTOMATIC AVAILABILITY FORMULAS (ONE-WAY: Pieces → Cartons/Pallets) ---
         # Replace Cartons and Pallets values with formulas
         if col_pieces and col_cartons and col_pallets and col_ppc and col_ppp:
@@ -146,18 +159,18 @@ def write_rows_to_xlsx(
             ppc_ref = f"{get_column_letter(col_ppc)}{excel_row}"
             ppp_ref = f"{get_column_letter(col_ppp)}{excel_row}"
 
-            # Cartons = Pieces ÷ Piece per case
+            # Cartons = ROUNDUP(Pieces ÷ Piece per case, 0)
             cartons_cell = ws.cell(row=excel_row, column=col_cartons)
-            cartons_cell.value = f'=IFERROR({pieces_ref}/{ppc_ref},"")'
-            cartons_cell.number_format = "0.0"
+            cartons_cell.value = f'=IFERROR(ROUNDUP({pieces_ref}/{ppc_ref},0),"")'
+            cartons_cell.number_format = "0"
             cartons_cell.font = Font(size=10, name="Roboto")
             cartons_cell.alignment = Alignment(horizontal="center", vertical="center")
             cartons_cell.border = full_grid
 
-            # Pallets = Pieces ÷ Pieces per pallet
+            # Pallets = ROUNDUP(Pieces ÷ Pieces per pallet, 0)
             pallets_cell = ws.cell(row=excel_row, column=col_pallets)
-            pallets_cell.value = f'=IFERROR({pieces_ref}/{ppp_ref},"")'
-            pallets_cell.number_format = "0.0"
+            pallets_cell.value = f'=IFERROR(ROUNDUP({pieces_ref}/{ppp_ref},0),"")'
+            pallets_cell.number_format = "0"
             pallets_cell.font = Font(size=10, name="Roboto")
             pallets_cell.alignment = Alignment(horizontal="center", vertical="center")
             pallets_cell.border = full_grid
@@ -192,52 +205,49 @@ def write_rows_to_xlsx(
     if col_cartons and col_pallets and len(rows) > 0:
         last_data_row = start_row + len(rows)
         totals_row = last_data_row + 1
-        
+
         # Add empty cells with borders for all columns
-        for col_idx, header in enumerate(headers):
+        for col_idx, _header in enumerate(headers):
             excel_col = start_col + col_idx
             cell = ws.cell(row=totals_row, column=excel_col)
             cell.alignment = Alignment(horizontal="center", vertical="center")
-            
-            # ✅ CHANGED: All borders THIN (no thick borders on totals row)
             cell.border = Border(top=thin, bottom=thin, left=thin, right=thin)
-        
-        # Add totals for the 3 availability columns (will overwrite empty cells)
+
+        # Add totals for the 3 availability columns
         first_data_row = start_row + 1
-        
+
         # Availability/Cartons
         cartons_total_cell = ws.cell(row=totals_row, column=col_cartons)
         cartons_range = f"{get_column_letter(col_cartons)}{first_data_row}:{get_column_letter(col_cartons)}{last_data_row}"
         cartons_total_cell.value = f"=SUM({cartons_range})"
-        cartons_total_cell.number_format = "0.0"
+        cartons_total_cell.number_format = "0"
         cartons_total_cell.alignment = Alignment(horizontal="center", vertical="center")
-        # ✅ CHANGED: Roboto 10 font for totals + Background color
         cartons_total_cell.font = Font(bold=True, size=10, name="Roboto")
         cartons_total_cell.fill = PatternFill(start_color="F8F0D9", end_color="F8F0D9", fill_type="solid")
         cartons_total_cell.border = Border(top=thin, bottom=thin, left=thin, right=thin)
-        
+
         # Availability/Pieces
-        pieces_total_cell = ws.cell(row=totals_row, column=col_pieces)
-        pieces_range = f"{get_column_letter(col_pieces)}{first_data_row}:{get_column_letter(col_pieces)}{last_data_row}"
-        pieces_total_cell.value = f"=SUM({pieces_range})"
-        pieces_total_cell.number_format = "0.0"
-        pieces_total_cell.alignment = Alignment(horizontal="center", vertical="center")
-        pieces_total_cell.font = Font(bold=True, size=10, name="Roboto")
-        pieces_total_cell.fill = PatternFill(start_color="F8F0D9", end_color="F8F0D9", fill_type="solid")
-        pieces_total_cell.border = Border(top=thin, bottom=thin, left=thin, right=thin)
-        
+        if col_pieces:
+            pieces_total_cell = ws.cell(row=totals_row, column=col_pieces)
+            pieces_range = f"{get_column_letter(col_pieces)}{first_data_row}:{get_column_letter(col_pieces)}{last_data_row}"
+            pieces_total_cell.value = f"=SUM({pieces_range})"
+            pieces_total_cell.number_format = "0"
+            pieces_total_cell.alignment = Alignment(horizontal="center", vertical="center")
+            pieces_total_cell.font = Font(bold=True, size=10, name="Roboto")
+            pieces_total_cell.fill = PatternFill(start_color="F8F0D9", end_color="F8F0D9", fill_type="solid")
+            pieces_total_cell.border = Border(top=thin, bottom=thin, left=thin, right=thin)
+
         # Availability/Pallets
         pallets_total_cell = ws.cell(row=totals_row, column=col_pallets)
         pallets_range = f"{get_column_letter(col_pallets)}{first_data_row}:{get_column_letter(col_pallets)}{last_data_row}"
         pallets_total_cell.value = f"=SUM({pallets_range})"
-        pallets_total_cell.number_format = "0.0"
+        pallets_total_cell.number_format = "0"
         pallets_total_cell.alignment = Alignment(horizontal="center", vertical="center")
         pallets_total_cell.font = Font(bold=True, size=10, name="Roboto")
         pallets_total_cell.fill = PatternFill(start_color="F8F0D9", end_color="F8F0D9", fill_type="solid")
         pallets_total_cell.border = Border(top=thin, bottom=thin, left=thin, right=thin)
 
-    # --- OPTIMIZED COLUMN WIDTHS (NARROWER FOR BETTER PAGE FIT) ---
-    # Define fixed widths for specific columns to fit page better
+    # --- OPTIMIZED COLUMN WIDTHS ---
     COLUMN_WIDTHS = {
         "Article Number": 13,
         "EAN code unit": 15,
@@ -253,16 +263,14 @@ def write_rows_to_xlsx(
         "Availability/Pallets": 13,
         "Price/Unit (Euro)": 12,
     }
-    
+
     for col_idx, header in enumerate(headers):
         excel_col = start_col + col_idx
         column_letter = get_column_letter(excel_col)
-        
-        # Use fixed width if defined, otherwise auto-calculate
+
         if header in COLUMN_WIDTHS:
             width = COLUMN_WIDTHS[header]
         else:
-            # Fallback: auto-calculate for any undefined columns
             header_for_len = str(_FIXED_HEADER_LABELS.get(header, header)).replace("\n", " ")
             max_length = len(header_for_len)
             for row_data in rows:
@@ -270,7 +278,7 @@ def write_rows_to_xlsx(
                 if v is not None:
                     max_length = max(max_length, len(str(v)))
             width = min(max_length + 3, 50)
-        
+
         ws.column_dimensions[column_letter].width = width
 
     # No freeze panes
@@ -281,11 +289,10 @@ def write_rows_to_xlsx(
         valid_images = [p for p in product_images if p and Path(p).exists()]
         print(f"📸 Adding {len(valid_images)} product images...")
 
-        # Calculate last row (data rows + totals row if exists)
         last_row = start_row + len(rows)
         if rows and col_cartons and col_pieces and col_pallets:
-            last_row += 1  # Add 1 for totals row
-        
+            last_row += 1  # totals row
+
         image_start_row = last_row + 5
         images_per_row = 4
         col_spacing = 3
@@ -323,7 +330,6 @@ def write_rows_to_xlsx(
 
     wb.save(output_path)
     print(f"✅ Excel saved: {output_path.name}")
-    
-    # Log automatic formula info
+
     if col_pieces and col_cartons and col_pallets:
-        print(f"ℹ️  Availability: Edit 'Pieces' column → Cartons & Pallets auto-update")
+        print("ℹ️  Availability: Edit 'Pieces' column → Cartons & Pallets auto-update (ROUNDUP, integer).")

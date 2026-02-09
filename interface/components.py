@@ -3,18 +3,20 @@ UI Components for Offer Creation Tool
 Reusable UI elements
 """
 
-import streamlit as st
-from pathlib import Path
-from io import BytesIO
-import urllib.parse
-import tempfile
-import pandas as pd
 import base64
+import tempfile
+import urllib.parse
+from io import BytesIO
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 
 def render_logo_html() -> str:
     """
-    Logo'yu square olarak basmak için HTML string döner.
+    Returns HTML string to render logo as a square.
     """
     logo_dir = Path(__file__).parent / "company_logo"
     if not logo_dir.exists():
@@ -35,7 +37,7 @@ def render_logo_html() -> str:
 
 def render_header():
     """
-    Title solda, logo sağda TEK SATIR.
+    Title on the left, logo on the right, single row.
     """
     logo_html = render_logo_html()
 
@@ -120,7 +122,7 @@ def render_process_button():
         return st.button(
             "🚀 Process Offer",
             type="primary",
-            use_container_width=True,
+            width="stretch",  # use_container_width -> width='stretch'
             key="process_offer_btn",
         )
 
@@ -136,6 +138,25 @@ def render_success_message():
     """,
         unsafe_allow_html=True,
     )
+
+
+def _force_availability_int_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Streamlit preview fix:
+    - Ensure availability columns are integers (nullable Int64)
+    - Use CEIL for any floats
+    - Keep missing values as <NA>
+    """
+    if df is None or df.empty:
+        return df
+
+    cols = ["Availability/Cartons", "Availability/Pieces", "Availability/Pallets"]
+    for c in cols:
+        if c in df.columns:
+            s = pd.to_numeric(df[c], errors="coerce")
+            s = np.ceil(s)
+            df[c] = s.astype("Int64")
+    return df
 
 
 def render_selectable_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -157,27 +178,15 @@ def render_selectable_table(df: pd.DataFrame) -> pd.DataFrame:
     elif (not select_all) and all_selected:
         st.session_state.row_selected = [False] * n
 
-    view_df = df.copy()
-
-    display_cols = ["Availability/Cartons", "Availability/Pieces", "Availability/Pallets"]
-    for col in display_cols:
-        if col in view_df.columns:
-
-            def _fmt(x):
-                if x is None or (isinstance(x, float) and pd.isna(x)):
-                    return None
-                try:
-                    return f"{float(x):.1f}"
-                except Exception:
-                    return x
-
-            view_df[col] = view_df[col].map(_fmt)
+    # IMPORTANT: do NOT format availability as strings (that is what caused floats/decimals)
+    # Instead: force proper Int64 dtype for clean display.
+    view_df = _force_availability_int_display(df.copy())
 
     view_df.insert(0, "_selected", st.session_state.row_selected)
 
     edited = st.data_editor(
         view_df,
-        use_container_width=True,
+        width="stretch",  # use_container_width -> width='stretch'
         hide_index=True,
         column_config={
             "_selected": st.column_config.CheckboxColumn(
@@ -195,6 +204,9 @@ def render_selectable_table(df: pd.DataFrame) -> pd.DataFrame:
 
     selected_mask = pd.Series(st.session_state.row_selected, index=df.index)
     selected_df = df[selected_mask].copy().reset_index(drop=True)
+
+    # Keep selected_df also clean for subsequent steps
+    selected_df = _force_availability_int_display(selected_df)
 
     st.caption(f"Selected: {len(selected_df)} / {len(df)} products")
     return selected_df
@@ -220,26 +232,24 @@ def render_product_image_uploader(selected_df):
         if not product_desc:
             continue
 
-        # ✅ PRIORITY: Use EAN for search, fallback to product description if EAN is empty
         search_term = ean_code if ean_code else product_desc
-        search_query = urllib.parse.quote(search_term)
+        search_query = urllib.parse.quote(str(search_term))
         google_images_url = f"https://www.google.com/search?tbm=isch&q={search_query}"
 
-        with st.expander(f"Product {idx + 1}: {product_desc[:60]}..."):
+        with st.expander(f"Product {idx + 1}: {str(product_desc)[:60]}..."):
             col1, col2 = st.columns([1, 2])
 
             with col1:
                 st.markdown(f"**Product:** {product_desc}")
-                # Always show what's being searched
                 if ean_code:
                     st.markdown(f"**🔍 Searching with EAN:** {ean_code}")
                 else:
-                    st.markdown(f"**🔍 Searching with:** Product Description")
+                    st.markdown("**🔍 Searching with:** Product Description")
                 st.markdown(f"[Open Google Images Search]({google_images_url})")
 
             with col2:
                 uploaded_img = st.file_uploader(
-                    f"Upload image for: {product_desc[:30]}",
+                    f"Upload image for: {str(product_desc)[:30]}",
                     type=["png", "jpg", "jpeg"],
                     key=f"product_image_{idx}",
                     label_visibility="collapsed",
@@ -263,6 +273,9 @@ def render_download_buttons(selected_df, product_images, dept_type, base_filenam
         st.warning("No products selected. Select at least 1 product to enable download.")
         return None, None
 
+    # Ensure clean ints before exporting
+    selected_df = _force_availability_int_display(selected_df.copy())
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -271,7 +284,7 @@ def render_download_buttons(selected_df, product_images, dept_type, base_filenam
             if st.button(
                 "🖼️ Download Excel with Images",
                 type="primary",
-                use_container_width=True,
+                width="stretch",  # use_container_width -> width='stretch'
                 key="download_with_images_btn",
             ):
                 return "with_images", product_images
@@ -285,8 +298,8 @@ def render_download_buttons(selected_df, product_images, dept_type, base_filenam
         filename = base_filename.replace(".xlsx", "") + "_data_only.xlsx"
         out_path = Path(tempfile.gettempdir()) / filename
 
-        from writers.excel_writer import write_rows_to_xlsx
         from domain.schemas import FOOD_HEADERS, HPC_HEADERS
+        from writers.excel_writer import write_rows_to_xlsx
 
         if dept_type == "food":
             headers = FOOD_HEADERS
@@ -311,7 +324,7 @@ def render_download_buttons(selected_df, product_images, dept_type, base_filenam
                 data=f,
                 file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width="stretch",  # use_container_width -> width='stretch'
                 key="download_no_images_btn",
             )
 
