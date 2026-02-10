@@ -26,6 +26,18 @@ from components import (
 from processor import process_uploaded_file
 from styles import get_custom_css
 
+# Import configuration
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+from config import (
+    MAX_FILE_SIZE_MB,
+    MAX_SHEET_ROWS,
+    MAX_SHEET_COLS,
+    MAX_SHEETS,
+    EXTREME_COLS_LIMIT,
+)
+
 
 def _force_availability_ints(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -42,6 +54,82 @@ def _force_availability_ints(df: pd.DataFrame) -> pd.DataFrame:
             s = np.ceil(s)
             df[c] = s.astype("Int64")  # nullable integer
     return df
+
+
+def _validate_excel_file(uploaded_file) -> tuple[bool, str, dict]:
+    """
+    Validate Excel file size and structure.
+    
+    Returns:
+        (is_valid, error_message, sheet_info_dict)
+        sheet_info_dict = {sheet_name: {"rows": int, "cols": int}}
+    """
+    import openpyxl
+    
+    # 1. Check file size
+    file_size_mb = uploaded_file.size / (1024 * 1024)
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        return False, f"❌ File size ({file_size_mb:.1f} MB) exceeds limit ({MAX_FILE_SIZE_MB} MB). Please reduce file size.", {}
+    
+    # 2. Save temp file and inspect with openpyxl
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            tmp_path = tmp.name
+        
+        wb = openpyxl.load_workbook(tmp_path, read_only=True, data_only=True)
+        
+        sheet_info = {}
+        total_sheets = len(wb.sheetnames)
+        
+        if total_sheets > MAX_SHEETS:
+            wb.close()
+            Path(tmp_path).unlink(missing_ok=True)
+            return False, f"❌ File has {total_sheets} sheets. Maximum {MAX_SHEETS} sheets allowed.", {}
+        
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = ws.max_row
+            cols = ws.max_column
+            
+            sheet_info[sheet_name] = {"rows": rows, "cols": cols}
+        
+        wb.close()
+        Path(tmp_path).unlink(missing_ok=True)
+        
+        return True, "", sheet_info
+        
+    except Exception as e:
+        return False, f"❌ Error reading Excel file: {str(e)}", {}
+
+
+def _check_sheet_limits(sheet_info: dict, selected_sheet: str) -> tuple[bool, str]:
+    """
+    Check if selected sheet exceeds limits.
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    if selected_sheet not in sheet_info:
+        return False, "❌ Selected sheet not found in file."
+    
+    info = sheet_info[selected_sheet]
+    rows = info["rows"]
+    cols = info["cols"]
+    
+    # Hard block extremely wide sheets
+    if cols > EXTREME_COLS_LIMIT:
+        return False, f"❌ Sheet has {cols:,} columns (limit: {EXTREME_COLS_LIMIT:,}). This is too wide to process. Please split the data."
+    
+    # Check row limit
+    if rows > MAX_SHEET_ROWS:
+        return False, f"❌ Sheet has {rows:,} rows (limit: {MAX_SHEET_ROWS:,}). Please filter or split the data."
+    
+    # Check column limit
+    if cols > MAX_SHEET_COLS:
+        return False, f"❌ Sheet has {cols:,} columns (limit: {MAX_SHEET_COLS:,}). Please reduce columns."
+    
+    return True, ""
 
 
 # ============================================================================
@@ -82,6 +170,12 @@ if "uploaded_file_data" not in st.session_state:
     st.session_state.uploaded_file_data = None
 if "dept_type" not in st.session_state:
     st.session_state.dept_type = None
+if "sheet_info" not in st.session_state:
+    st.session_state.sheet_info = {}
+if "selected_sheet" not in st.session_state:
+    st.session_state.selected_sheet = None
+if "file_validated" not in st.session_state:
+    st.session_state.file_validated = False
 
 # ============================================================================
 # MAIN APP FLOW
@@ -98,10 +192,100 @@ if dept_type:
 
     if uploaded_file:
         st.session_state.uploaded_file_data = uploaded_file
+        
+        # ====================================================================
+        # NEW: VALIDATE FILE AND SHOW SHEET INFO
+        # ====================================================================
+        
+        # Only validate once per file
+        if not st.session_state.file_validated or st.session_state.get("last_file_name") != uploaded_file.name:
+            with st.spinner("🔍 Validating file..."):
+                is_valid, error_msg, sheet_info = _validate_excel_file(uploaded_file)
+                
+                if not is_valid:
+                    st.error(error_msg)
+                    st.stop()
+                
+                st.session_state.sheet_info = sheet_info
+                st.session_state.file_validated = True
+                st.session_state.last_file_name = uploaded_file.name
+                st.session_state.selected_sheet = None  # Reset sheet selection
+        
+        # ====================================================================
+        # NEW: SHEET SELECTION UI
+        # ====================================================================
+        
+        if st.session_state.sheet_info:
+            st.markdown("---")
+            st.subheader("📋 Select Sheet to Process")
+            
+            # Display sheet info in a nice format
+            sheet_options = []
+            for sheet_name, info in st.session_state.sheet_info.items():
+                rows = info["rows"]
+                cols = info["cols"]
+                
+                # Check if sheet exceeds limits
+                exceeds_rows = rows > MAX_SHEET_ROWS
+                exceeds_cols = cols > MAX_SHEET_COLS
+                exceeds_extreme = cols > EXTREME_COLS_LIMIT
+                
+                status = "✅"
+                if exceeds_extreme:
+                    status = "🚫 TOO WIDE"
+                elif exceeds_rows or exceeds_cols:
+                    status = "⚠️ EXCEEDS LIMIT"
+                
+                label = f"{status} {sheet_name} ({rows:,} rows × {cols:,} cols)"
+                sheet_options.append((sheet_name, label, exceeds_rows or exceeds_cols or exceeds_extreme))
+            
+            # Create selectbox with formatted options
+            selected_label = st.selectbox(
+                "Choose a sheet:",
+                options=[label for _, label, _ in sheet_options],
+                index=None,
+                help="Select the sheet containing your supplier offer data"
+            )
+            
+            # Extract actual sheet name from label
+            if selected_label:
+                selected_sheet_name = None
+                for sheet_name, label, exceeds in sheet_options:
+                    if label == selected_label:
+                        selected_sheet_name = sheet_name
+                        break
+                
+                st.session_state.selected_sheet = selected_sheet_name
+                
+                # Show warning if limits exceeded
+                is_valid, limit_error = _check_sheet_limits(st.session_state.sheet_info, selected_sheet_name)
+                if not is_valid:
+                    st.error(limit_error)
+                    st.info("💡 **Tips to reduce file size:**\n"
+                           "- Filter data to only include relevant rows\n"
+                           "- Remove unnecessary columns\n"
+                           "- Split large files into smaller batches")
+                    st.stop()
+                else:
+                    st.success(f"✅ Sheet '{selected_sheet_name}' is within limits and ready to process!")
+            
+            st.markdown("---")
 
-        process_btn = render_process_button()
+        # ====================================================================
+        # PROCESS BUTTON (only enabled if sheet selected and valid)
+        # ====================================================================
+        
+        process_enabled = (
+            st.session_state.selected_sheet is not None 
+            and st.session_state.file_validated
+        )
+        
+        if not process_enabled:
+            st.warning("⚠️ Please select a valid sheet to continue")
+        
+        process_btn = render_process_button() if process_enabled else st.button("Process Offer", disabled=True, type="primary")
 
-        if process_btn:
+        if process_btn and process_enabled:
             with st.spinner("🔄 Processing your offer..."):
                 success, output_path, df, error = process_uploaded_file(
                     uploaded_file=uploaded_file,
@@ -109,6 +293,7 @@ if dept_type:
                     double_stackable=st.session_state.double_stackable,
                     extract_price=st.session_state.extract_price,
                     product_images=None,
+                    selected_sheet=st.session_state.selected_sheet,  # NEW: Pass selected sheet
                 )
 
                 if success:
@@ -186,7 +371,7 @@ if st.session_state.processed and st.session_state.df is not None:
                     file_name=output_no_images.name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="secondary",
-                    width="stretch",  # replaced use_container_width
+                    width="stretch",
                     key="download_no_images",
                 )
 
@@ -239,7 +424,7 @@ if st.session_state.processed and st.session_state.df is not None:
                     file_name=output_with_images.name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary",
-                    width="stretch",  # replaced use_container_width
+                    width="stretch",
                     key="final_download",
                 )
 

@@ -29,6 +29,7 @@ def process_uploaded_file(
     extract_price: bool = False,
     product_images: list = None,
     selected_rows_only: pd.DataFrame = None,
+    selected_sheet: str = None,  # NEW: Sheet name to process
 ):
     """Process uploaded file and return results with optional product images.
 
@@ -39,6 +40,7 @@ def process_uploaded_file(
         extract_price: bool, if True price is extracted from supplier offer
         product_images: list of Path objects (one per SELECTED product, None for missing)
         selected_rows_only: DataFrame with only selected rows (for regeneration with images)
+        selected_sheet: str, name of the sheet to process (None = first sheet)
 
     Returns:
         tuple: (success: bool, output_path: Path or None, df: DataFrame or None, error: str or None)
@@ -74,6 +76,7 @@ def process_uploaded_file(
                 double_stackable=double_stackable,
                 extract_price=extract_price,
                 product_images=product_images,
+                sheet_name=selected_sheet,  # NEW: Pass sheet name to pipeline
             )
 
             progress_bar.progress(80)
@@ -175,4 +178,14 @@ def process_uploaded_file(
             import traceback
             error_detail = traceback.format_exc()
             print(f"Error in processor: {error_detail}")
-            return False, None, None, str(e)
+            
+            # Provide user-friendly error messages
+            error_msg = str(e)
+            if "JSON" in error_msg or "json" in error_msg:
+                error_msg = "AI returned invalid data format. Please try with a smaller file or contact support."
+            elif "Memory" in error_msg or "memory" in error_msg:
+                error_msg = "File too large to process. Please reduce file size or split into smaller batches."
+            elif "token" in error_msg.lower():
+                error_msg = "File content exceeds processing limits. Please reduce data size."
+            
+            return False, None, None, error_msg

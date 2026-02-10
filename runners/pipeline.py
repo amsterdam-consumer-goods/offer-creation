@@ -127,6 +127,7 @@ def process_file(
     double_stackable: bool = False,
     extract_price: bool = False,
     product_images: Optional[List[Optional[Path]]] = None,
+    sheet_name: Optional[str] = None,  # NEW: Sheet name to process
 ) -> tuple[Path, pd.DataFrame]:
     """Process a single offer file through complete pipeline.
 
@@ -147,6 +148,7 @@ def process_file(
         double_stackable: If True, multiply all availability values by 2
         extract_price: If True, extract price from supplier offer
         product_images: Optional list of image paths (one per product, None for missing)
+        sheet_name: Optional sheet name to process (Excel only, None = first sheet)
 
     Returns:
         tuple: (output_path, dataframe)
@@ -157,7 +159,14 @@ def process_file(
     suffix = input_path.suffix.lower()
 
     if suffix in [".xlsx", ".xls"]:
-        canonical_rows = excel_to_canonical(input_path, extract_price=extract_price)
+        # NEW: Pass sheet_name to Excel extraction
+        canonical_rows = excel_to_canonical(
+            input_path, 
+            extract_price=extract_price,
+            sheet_name=sheet_name  # NEW parameter
+        )
+        if sheet_name:
+            print(f"ℹ️  Processing sheet: '{sheet_name}'")
     elif suffix == ".pdf":
         canonical_rows = pdf_to_canonical(input_path, extract_price=extract_price)
     elif suffix in [".png", ".jpg", ".jpeg"]:
@@ -275,6 +284,7 @@ def process_batch(
                 output_dir=output_dir,
                 double_stackable=double_stackable,
                 product_images=None,  # Batch processing doesn't support images
+                sheet_name=None,  # Batch processing uses default (first sheet)
             )
             output_paths.append(output_path)
         except Exception as e:
