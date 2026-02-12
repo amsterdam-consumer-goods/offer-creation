@@ -310,3 +310,55 @@ IMPORTANT REMINDERS:
 
 Return the extracted data in JSON format.
 """.strip()
+
+
+def get_image_extraction_prompt(category: str = "food", extract_price: bool = False) -> str:
+    """Prompt for extracting data from supplier offer images via Vision API."""
+    
+    bbd_instruction = (
+        "- BBD: best before date (DD/MM/YYYY, shelf life in days/months, or descriptive like 'FRESH PRODUCTION')\n"
+    ) if category == "food" else ""
+    
+    price_instruction = (
+        "- Price: extract unit price if visible\n"
+    ) if extract_price else ""
+    
+    return f"""Extract ALL product information from this supplier offer image.
+
+Return a JSON array with this EXACT structure:
+[
+  {{
+    "Product": "product name in ENGLISH and ALL CAPS",
+    "EAN": "EAN code if visible (unit EAN only, preserve leading zeros)",
+    "Content": "net content like 500GR, 1L, 330ML",
+    "Languages": "language codes like EN/FR/DE if stated",
+    "szt/kart": "pieces per case/carton (number only)",
+    "szt/pal": "pieces per pallet (number only)",
+    "CON/PAL": "cases per pallet (CSE/PAL, number only)",
+    "Availability": "availability info (e.g., '2pal', '100 pieces', '50 cases')"{bbd_instruction}{price_instruction}
+  }}
+]
+
+CRITICAL RULES:
+1. Extract ONLY what you see - NO guessing
+2. Empty string "" for missing fields
+3. Product name MUST be in ENGLISH and ALL CAPS
+4. Translate French/Spanish/German/Dutch terms to English
+5. Remove content values (120G, 500ML) from Product name → put in Content field
+6. Preserve ALL numbers exactly as shown
+7. Return ONLY valid JSON array
+
+Common abbreviations in images:
+- szt/kart = pieces per case
+- szt/pal = pieces per pallet  
+- CON/PAL or CSE/PAL = cases per pallet
+- Languages might be shown as "PL", "EN/DE", etc.
+
+Example from image:
+Product: "MENTOS PURE FRESH MINT BOT. 60g"
+→ Product: "MENTOS PURE FRESH MINT BOTTLE"
+→ Content: "60GR"
+→ szt/kart: "24"
+→ szt/pal: "5184"
+
+Return ONLY the JSON array, no other text."""

@@ -1,8 +1,11 @@
-# interface/app.py
 """
-Offer Creation Tool - Main Application
-
-Clean, modular Streamlit interface for converting supplier offers.
+MAIN APPLICATION INTERFACE
+--------------------------
+Streamlit UI for the Offer Creation Tool. Handles:
+- File upload and validation (Excel, Images, PDF)
+- Department selection (FOOD/HPC)
+- Processing orchestration
+- Results display and download
 """
 
 import tempfile
@@ -26,7 +29,6 @@ from components import (
 from processor import process_uploaded_file
 from styles import get_custom_css
 
-# Import configuration
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -41,10 +43,7 @@ from config import (
 
 
 def _force_availability_ints(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensure availability columns are displayed as integers in the UI (no .0),
-    using CEIL for any non-integer numeric values.
-    """
+    """Ensure availability columns display as integers (no .0 decimals)."""
     if df is None or df.empty:
         return df
 
@@ -53,8 +52,26 @@ def _force_availability_ints(df: pd.DataFrame) -> pd.DataFrame:
         if c in df.columns:
             s = pd.to_numeric(df[c], errors="coerce")
             s = np.ceil(s)
-            df[c] = s.astype("Int64")  # nullable integer
+            df[c] = s.astype("Int64")
     return df
+
+
+def _get_file_type(uploaded_file) -> str:
+    """
+    Detect file type from extension.
+    
+    Returns: 'excel', 'image', 'pdf', or 'unknown'
+    """
+    filename = uploaded_file.name.lower()
+    
+    if filename.endswith(('.xlsx', '.xls')):
+        return 'excel'
+    elif filename.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+        return 'image'
+    elif filename.endswith('.pdf'):
+        return 'pdf'
+    else:
+        return 'unknown'
 
 
 def _validate_excel_file(uploaded_file) -> tuple[bool, str, dict]:
@@ -67,12 +84,10 @@ def _validate_excel_file(uploaded_file) -> tuple[bool, str, dict]:
     """
     import openpyxl
     
-    # 1. Check file size
     file_size_mb = uploaded_file.size / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
         return False, f"❌ File size ({file_size_mb:.1f} MB) exceeds limit ({MAX_FILE_SIZE_MB} MB). Please reduce file size.", {}
     
-    # 2. Save temp file and inspect with openpyxl
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
             tmp.write(uploaded_file.getbuffer())
@@ -106,7 +121,7 @@ def _validate_excel_file(uploaded_file) -> tuple[bool, str, dict]:
 
 def _check_sheet_limits(sheet_info: dict, selected_sheet: str) -> tuple[bool, str]:
     """
-    Check if selected sheet exceeds limits.
+    Check if selected sheet exceeds processing limits.
     
     Returns:
         (is_valid, error_message)
@@ -118,15 +133,12 @@ def _check_sheet_limits(sheet_info: dict, selected_sheet: str) -> tuple[bool, st
     rows = info["rows"]
     cols = info["cols"]
     
-    # Hard block extremely wide sheets
     if cols > EXTREME_COLS_LIMIT:
         return False, f"❌ Sheet has {cols:,} columns (limit: {EXTREME_COLS_LIMIT:,}). This is too wide to process. Please split the data."
     
-    # Check row limit
     if rows > MAX_SHEET_ROWS:
         return False, f"❌ Sheet has {rows:,} rows (limit: {MAX_SHEET_ROWS:,}). Please filter or split the data."
     
-    # Check column limit
     if cols > MAX_SHEET_COLS:
         return False, f"❌ Sheet has {cols:,} columns (limit: {MAX_SHEET_COLS:,}). Please reduce columns."
     
@@ -143,9 +155,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ============================================================================
-# APPLY STYLES
-# ============================================================================
 st.markdown(get_custom_css(), unsafe_allow_html=True)
 
 # ============================================================================
@@ -177,6 +186,8 @@ if "selected_sheet" not in st.session_state:
     st.session_state.selected_sheet = None
 if "file_validated" not in st.session_state:
     st.session_state.file_validated = False
+if "file_type" not in st.session_state:
+    st.session_state.file_type = None
 
 # ============================================================================
 # MAIN APP FLOW
@@ -194,81 +205,107 @@ if dept_type:
     if uploaded_file:
         st.session_state.uploaded_file_data = uploaded_file
         
-        # ====================================================================
-        # VALIDATE FILE IMMEDIATELY (NO UI, JUST ERROR IF TOO LARGE)
-        # ====================================================================
-        
-        # Only validate once per file
         file_is_new = st.session_state.get("last_file_name") != uploaded_file.name
         
         if file_is_new or not st.session_state.file_validated:
-            with st.spinner("🔍 Checking file limits..."):
-                is_valid, error_msg, sheet_info = _validate_excel_file(uploaded_file)
-                
-                if not is_valid:
-                    st.error(error_msg)
-                    st.info("💡 **How to reduce file size:**\n"
-                           "- Filter data to only include relevant rows\n"
-                           "- Remove unnecessary columns\n"
-                           "- Split large files into smaller batches")
-                    st.stop()
-                
-                # Auto-select first sheet
-                first_sheet = list(sheet_info.keys())[0]
-                
-                # Check if first sheet exceeds limits
-                is_valid, limit_error = _check_sheet_limits(sheet_info, first_sheet)
-                if not is_valid:
+            file_type = _get_file_type(uploaded_file)
+            st.session_state.file_type = file_type
+            
+            # Reject unsupported formats
+            if file_type == 'unknown':
+                st.error("❌ **Unsupported file format**")
+                st.info("📄 **Supported formats:**\n"
+                       "- Excel: .xlsx, .xls\n"
+                       "- Images: .jpg, .jpeg, .png\n"
+                       "- PDF: .pdf")
+                st.stop()
+            
+            # Excel: Full validation with sheet limits
+            if file_type == 'excel':
+                with st.spinner("🔍 Checking Excel file limits..."):
+                    is_valid, error_msg, sheet_info = _validate_excel_file(uploaded_file)
+                    
+                    if not is_valid:
+                        st.error(error_msg)
+                        st.info("💡 **How to reduce file size:**\n"
+                               "- Filter data to only include relevant rows\n"
+                               "- Remove unnecessary columns\n"
+                               "- Split large files into smaller batches")
+                        st.stop()
+                    
+                    first_sheet = list(sheet_info.keys())[0]
+                    
+                    is_valid, limit_error = _check_sheet_limits(sheet_info, first_sheet)
+                    if not is_valid:
+                        info = sheet_info[first_sheet]
+                        st.error(f"❌ **File is too large to process**\n\n"
+                                f"Sheet '{first_sheet}' has **{info['rows']:,} rows** and **{info['cols']:,} columns**.\n\n"
+                                f"**Limits:** {MAX_SHEET_ROWS:,} rows, {MAX_SHEET_COLS:,} columns per sheet.")
+                        st.info("💡 **How to fix:**\n"
+                               f"- Filter the sheet to reduce rows (currently {info['rows']:,} → target <{MAX_SHEET_ROWS:,})\n"
+                               f"- Remove unused columns (currently {info['cols']:,} → target <{MAX_SHEET_COLS:,})\n"
+                               "- Split the file into multiple smaller files")
+                        st.stop()
+                    
+                    st.session_state.sheet_info = sheet_info
+                    st.session_state.selected_sheet = first_sheet
+                    st.session_state.file_validated = True
+                    st.session_state.last_file_name = uploaded_file.name
+                    
                     info = sheet_info[first_sheet]
-                    st.error(f"❌ **File is too large to process**\n\n"
-                            f"Sheet '{first_sheet}' has **{info['rows']:,} rows** and **{info['cols']:,} columns**.\n\n"
-                            f"**Limits:** {MAX_SHEET_ROWS:,} rows, {MAX_SHEET_COLS:,} columns per sheet.")
-                    st.info("💡 **How to fix:**\n"
-                           f"- Filter the sheet to reduce rows (currently {info['rows']:,} → target <{MAX_SHEET_ROWS:,})\n"
-                           f"- Remove unused columns (currently {info['cols']:,} → target <{MAX_SHEET_COLS:,})\n"
-                           "- Split the file into multiple smaller files")
+                    st.success(f"✅ Excel file validated! Sheet '{first_sheet}' ({info['rows']:,} rows × {info['cols']:,} cols)")
+            
+            # Image: Simple size check
+            elif file_type == 'image':
+                file_size_mb = uploaded_file.size / (1024 * 1024)
+                if file_size_mb > MAX_FILE_SIZE_MB:
+                    st.error(f"❌ Image size ({file_size_mb:.1f} MB) exceeds limit ({MAX_FILE_SIZE_MB} MB)")
                     st.stop()
                 
-                # File is valid!
-                st.session_state.sheet_info = sheet_info
-                st.session_state.selected_sheet = first_sheet
                 st.session_state.file_validated = True
                 st.session_state.last_file_name = uploaded_file.name
+                st.success(f"✅ Image uploaded! ({file_size_mb:.2f} MB) - AI will extract data from image")
+            
+            # PDF: Simple size check
+            elif file_type == 'pdf':
+                file_size_mb = uploaded_file.size / (1024 * 1024)
+                if file_size_mb > MAX_FILE_SIZE_MB:
+                    st.error(f"❌ PDF size ({file_size_mb:.1f} MB) exceeds limit ({MAX_FILE_SIZE_MB} MB)")
+                    st.stop()
+                
+                st.session_state.file_validated = True
+                st.session_state.last_file_name = uploaded_file.name
+                st.success(f"✅ PDF uploaded! ({file_size_mb:.2f} MB) - AI will extract data from PDF")
+
+        # ====================================================================
+        # PROCESS BUTTON
+        # ====================================================================
         
-        # Show success if file is valid
         if st.session_state.file_validated:
-            first_sheet = st.session_state.selected_sheet
-            info = st.session_state.sheet_info[first_sheet]
-            st.success(f"✅ File is valid! Sheet '{first_sheet}' ({info['rows']:,} rows × {info['cols']:,} cols) is ready to process.")
+            process_btn = render_process_button()
 
-        # ====================================================================
-        # PROCESS BUTTON (only show if file is valid)
-        # ====================================================================
-        
-        process_btn = render_process_button()
+            if process_btn:
+                with st.spinner("🔄 Processing your offer..."):
+                    success, output_path, df, error = process_uploaded_file(
+                        uploaded_file=uploaded_file,
+                        dept_type=dept_type,
+                        double_stackable=st.session_state.double_stackable,
+                        extract_price=st.session_state.extract_price,
+                        product_images=None,
+                        selected_sheet=st.session_state.selected_sheet,
+                    )
 
-        if process_btn:
-            with st.spinner("🔄 Processing your offer..."):
-                success, output_path, df, error = process_uploaded_file(
-                    uploaded_file=uploaded_file,
-                    dept_type=dept_type,
-                    double_stackable=st.session_state.double_stackable,
-                    extract_price=st.session_state.extract_price,
-                    product_images=None,
-                    selected_sheet=st.session_state.selected_sheet,  # NEW: Pass selected sheet
-                )
+                    if success:
+                        df = _force_availability_ints(df)
 
-                if success:
-                    df = _force_availability_ints(df)
-
-                    st.session_state.processed = True
-                    st.session_state.output_path = output_path
-                    st.session_state.df = df
-                    st.session_state.selected_df = None
-                    st.session_state.product_images = {}
-                    st.session_state.row_selected = None
-                else:
-                    st.error(f"❌ Error: {error}")
+                        st.session_state.processed = True
+                        st.session_state.output_path = output_path
+                        st.session_state.df = df
+                        st.session_state.selected_df = None
+                        st.session_state.product_images = {}
+                        st.session_state.row_selected = None
+                    else:
+                        st.error(f"❌ Error: {error}")
 
 # ============================================================================
 # RESULTS SECTION
@@ -279,7 +316,7 @@ if st.session_state.processed and st.session_state.df is not None:
     edited_df = render_selectable_table(st.session_state.df)
 
     if edited_df is not None and len(edited_df) > 0 and "Include" in edited_df.columns:
-        selected_df = edited_df[edited_df["Include"] == True].copy()  # noqa: E712
+        selected_df = edited_df[edited_df["Include"] == True].copy()
         selected_df.drop(columns=["Include"], inplace=True, errors="ignore")
         selected_df.reset_index(drop=True, inplace=True)
     else:
@@ -302,9 +339,6 @@ if st.session_state.processed and st.session_state.df is not None:
         base_filename=st.session_state.output_path.name,
     )
 
-    # ------------------------------------------------------------------------
-    # NO-IMAGES DOWNLOAD
-    # ------------------------------------------------------------------------
     if action == "no_images" and selected_df is not None and len(selected_df) > 0:
         with st.spinner("📄 Generating Excel (no images)..."):
             from domain.schemas import FOOD_HEADERS, HPC_HEADERS
@@ -337,9 +371,6 @@ if st.session_state.processed and st.session_state.df is not None:
                     key="download_no_images",
                 )
 
-    # ------------------------------------------------------------------------
-    # WITH-IMAGES DOWNLOAD
-    # ------------------------------------------------------------------------
     if action == "with_images" and images_to_use and selected_df is not None and len(selected_df) > 0:
         with st.spinner("🎨 Generating Excel with images..."):
             from domain.schemas import FOOD_HEADERS, HPC_HEADERS

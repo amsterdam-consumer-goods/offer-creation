@@ -1,5 +1,3 @@
-# domain/schemas/food.py
-
 FOOD_HEADERS = [
     "Article Number",
     "EAN code unit",

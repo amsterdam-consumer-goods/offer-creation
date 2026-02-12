@@ -1,4 +1,10 @@
-"""OpenAI client wrapper for LLM extraction."""
+"""
+OpenAI client factory.
+
+This module initializes environment variables (via dotenv) and exposes a single
+shared OpenAI client instance for the application. The client reads credentials
+(e.g., OPENAI_API_KEY) from the environment.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +17,7 @@ _client: OpenAI | None = None
 
 
 def get_client() -> OpenAI:
-    """Get singleton OpenAI client.
-    
-    OPENAI_API_KEY is read from environment variables.
-    """
+    """Return a singleton OpenAI client instance."""
     global _client
     if _client is None:
         _client = OpenAI()

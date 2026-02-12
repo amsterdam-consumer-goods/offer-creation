@@ -1,4 +1,3 @@
-# writers/excel_writer.py
 """Excel writer with professional formatting - starts from B2 as required."""
 
 from __future__ import annotations

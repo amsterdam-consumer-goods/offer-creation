@@ -1,6 +1,8 @@
 """
-File Processor for Offer Creation Tool
-Handles file processing logic with proper image support
+FILE PROCESSOR - ORCHESTRATOR
+------------------------------
+Routes uploaded files to pipeline for processing.
+Returns standardized DataFrame.
 """
 
 import streamlit as st
@@ -10,13 +12,13 @@ import pandas as pd
 import sys
 import shutil
 
-# Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
 from runners.pipeline import process_file
 
 
 def _normalize_text(x) -> str:
+    """Normalize text for comparison (lowercase, stripped)."""
     if x is None:
         return ""
     return str(x).strip().lower()
@@ -24,40 +26,38 @@ def _normalize_text(x) -> str:
 
 def process_uploaded_file(
     uploaded_file,
-    dept_type,
+    dept_type: str,
     double_stackable: bool = False,
     extract_price: bool = False,
     product_images: list = None,
     selected_rows_only: pd.DataFrame = None,
-    selected_sheet: str = None,  # NEW: Sheet name to process
+    selected_sheet: str = None,
 ):
-    """Process uploaded file and return results with optional product images.
+    """
+    Process uploaded file and return standardized results.
 
     Args:
         uploaded_file: Streamlit UploadedFile object
-        dept_type: str, "food" or "hpc"
-        double_stackable: bool, if True availability values are doubled
-        extract_price: bool, if True price is extracted from supplier offer
-        product_images: list of Path objects (one per SELECTED product, None for missing)
-        selected_rows_only: DataFrame with only selected rows (for regeneration with images)
-        selected_sheet: str, name of the sheet to process (None = first sheet)
+        dept_type: "food" or "hpc"
+        double_stackable: If True, double availability values
+        extract_price: If True, extract price from supplier data
+        product_images: List of Path objects (one per product, None for missing)
+        selected_rows_only: DataFrame with only selected rows (for regeneration)
+        selected_sheet: Sheet name to process (Excel only, None = first sheet)
 
     Returns:
-        tuple: (success: bool, output_path: Path or None, df: DataFrame or None, error: str or None)
+        tuple: (success: bool, output_path: Path|None, df: DataFrame|None, error: str|None)
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir = Path(temp_dir)
 
-        # Save uploaded file
         input_path = temp_dir / uploaded_file.name
         with open(input_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        # Create output directory
         output_dir = temp_dir / "output"
         output_dir.mkdir(exist_ok=True)
 
-        # Progress indicators
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -68,7 +68,6 @@ def process_uploaded_file(
             status_text.text("🤖 AI is extracting data...")
             progress_bar.progress(40)
 
-            # Process file - GET DATAFRAME DIRECTLY
             output_path, df = process_file(
                 input_path=input_path,
                 category=dept_type,
@@ -76,21 +75,15 @@ def process_uploaded_file(
                 double_stackable=double_stackable,
                 extract_price=extract_price,
                 product_images=product_images,
-                sheet_name=selected_sheet,  # NEW: Pass sheet name to pipeline
+                sheet_name=selected_sheet,
             )
 
             progress_bar.progress(80)
             status_text.text("✅ Finalizing...")
 
-            # ------------------------------------------------------------------
-            # IMPORTANT FIX:
-            # Do NOT filter by Article Number when re-processing, because
-            # article numbers are regenerated on every run -> mismatch -> empty df.
-            # ------------------------------------------------------------------
             if selected_rows_only is not None and not selected_rows_only.empty:
                 df_filtered = df.copy()
 
-                # 1) Try match by EAN if available
                 use_ean = False
                 if "EAN code unit" in selected_rows_only.columns and "EAN code unit" in df_filtered.columns:
                     sel_eans = selected_rows_only["EAN code unit"].dropna().astype(str).str.strip()
@@ -101,10 +94,8 @@ def process_uploaded_file(
                         df_filtered = df_filtered[df_filtered["__ean"].isin(set(sel_eans.tolist()))]
                         df_filtered = df_filtered.drop(columns=["__ean"], errors="ignore")
 
-                # 2) If EAN not usable, match by Product Description (+ Content if exists)
                 if not use_ean:
                     if "Product Description" in selected_rows_only.columns and "Product Description" in df_filtered.columns:
-                        # Build composite keys
                         sel_desc = selected_rows_only["Product Description"].apply(_normalize_text)
 
                         if "Content" in selected_rows_only.columns and "Content" in df_filtered.columns:
@@ -121,31 +112,25 @@ def process_uploaded_file(
                         df_filtered = df_filtered[df_filtered["__k"].isin(set(sel_keys))]
                         df_filtered = df_filtered.drop(columns=["__k"], errors="ignore")
 
-                # 3) Fallback: if still empty, take first N rows (better than empty)
                 if df_filtered.empty:
                     n = len(selected_rows_only)
                     df_filtered = df.head(n).copy()
 
                 df = df_filtered
 
-                # Rewrite Excel with only selected rows
-                sys.path.append(str(Path(__file__).parent.parent))
                 from writers.excel_writer import write_rows_to_xlsx
                 from domain.schemas import FOOD_HEADERS, HPC_HEADERS
 
-                # ⚠️ CRITICAL FIX: Use correct headers and sheet_name based on dept_type
                 if dept_type == "food":
                     headers = FOOD_HEADERS
                     sheet_name = "FOOD"
-                else:  # hpc
+                else:
                     headers = HPC_HEADERS
                     sheet_name = "HPC"
                 
-                # ✅ FIX: Convert datetime columns to string before to_dict()
                 df_for_export = df.copy()
                 for col in df_for_export.columns:
                     if pd.api.types.is_datetime64_any_dtype(df_for_export[col]):
-                        # Convert datetime to string, replace NaT/nan with empty string
                         df_for_export[col] = df_for_export[col].astype(str).replace('NaT', '').replace('nan', '')
                 
                 rows = df_for_export.to_dict("records")
@@ -160,7 +145,6 @@ def process_uploaded_file(
                     product_images=product_images,
                 )
             else:
-                # Use original output
                 final_output = Path(tempfile.gettempdir()) / output_path.name
                 shutil.copy(output_path, final_output)
 
@@ -179,7 +163,6 @@ def process_uploaded_file(
             error_detail = traceback.format_exc()
             print(f"Error in processor: {error_detail}")
             
-            # Provide user-friendly error messages
             error_msg = str(e)
             if "JSON" in error_msg or "json" in error_msg:
                 error_msg = "AI returned invalid data format. Please try with a smaller file or contact support."

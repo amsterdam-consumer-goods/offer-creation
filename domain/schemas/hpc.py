@@ -1,5 +1,3 @@
-# domain/schemas/hpc.py
-
 HPC_HEADERS = [
     "Article Number",
     "EAN code unit",
